@@ -1,0 +1,17 @@
+# 构建产物
+build/
+sdkconfig.old
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.code-workspace
+
+# 临时/日志
+*.log
+tmp/
