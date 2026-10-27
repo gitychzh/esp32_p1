@@ -17,8 +17,15 @@
 //
 // 并发: 最多 MAX_TUNNELS 条隧道同时工作（各自一个 FreeRTOS 任务）。
 
-const char *WIFI_SSID = "YCHZHT";
-const char *WIFI_PASS = "22372222";
+// WiFi 配置：优先 YCHZH，故障时自动回退到 YCHZHT
+struct WiFiNet { const char* ssid; const char* pass; };
+static const WiFiNet WIFI_LIST[] = {
+  {"YCHZH",  "22372222"},
+  {"YCHZHT", "22372222"}
+};
+static const int WIFI_COUNT = 2;
+static int wifiIndex = 0;
+static uint32_t lastWifiScan = 0;
 
 IPAddress CTRL_HOST(115, 29, 231, 25);
 constexpr uint16_t CTRL_PORT = 9999;
@@ -47,21 +54,64 @@ void logf(const char *fmt, ...) {
 }
 
 // ---------- WiFi ----------
-void connectWiFi() {
+void tryConnect(int idx) {
+  if (idx < 0 || idx >= WIFI_COUNT) return;
+  wifiIndex = idx;
+  WiFi.disconnect(true);
+  delay(100);
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
   WiFi.persistent(false);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  Serial.printf("[WiFi] 连接 %s ", WIFI_SSID);
+  const char* ssid = WIFI_LIST[wifiIndex].ssid;
+  const char* pass = WIFI_LIST[wifiIndex].pass;
+  Serial.printf("[WiFi] 尝试连接 %s (优先序列 %d/%d)\n", ssid, wifiIndex+1, WIFI_COUNT);
+  WiFi.begin(ssid, pass);
+}
+
+void connectWiFi() {
+  tryConnect(0);
   uint32_t t0 = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - t0 < 30000) {
     delay(300);
     Serial.print(".");
   }
-  if (WiFi.status() == WL_CONNECTED)
+  if (WiFi.status() == WL_CONNECTED) {
     Serial.printf(" OK IP=%s RSSI=%d\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
+    return;
+  }
+  Serial.println(" 首选网络失败，尝试备选网络...");
+  for (int i = 1; i < WIFI_COUNT && WiFi.status() != WL_CONNECTED; i++) {
+    tryConnect(i);
+    uint32_t t1 = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - t1 < 20000) {
+      delay(300);
+      Serial.print(".");
+    }
+  }
+  if (WiFi.status() == WL_CONNECTED)
+    Serial.printf(" OK(IP备用网络) IP=%s RSSI=%d\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
   else
-    Serial.println(" 失败(稍后重试)");
+    Serial.println(" 所有网络连接失败，进入自动重连循环");
+}
+
+void checkWifiFallback() {
+  if (WiFi.status() == WL_CONNECTED) return;
+  // 当前网络连不上，尝试轮换到备选网络
+  Serial.printf("[WiFi] 当前网络断开，尝试 fallback...\n");
+  for (int i = 0; i < WIFI_COUNT; i++) {
+    if (i == wifiIndex) continue;
+    tryConnect(i);
+    uint32_t t0 = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - t0 < 15000) {
+      delay(300);
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.printf("[WiFi] FALLBACK 成功 -> %s IP=%s\n", WIFI_LIST[wifiIndex].ssid, WiFi.localIP().toString().c_str());
+      return;
+    }
+  }
+  // 都失败，回到首选重试
+  tryConnect(0);
 }
 
 // ---------- 控制通道写（多任务安全） ----------
@@ -268,12 +318,16 @@ void setup() {
 void loop() {
   static uint32_t lastBlink = 0;
   static bool ledOn = false;
+  static uint32_t lastFall = 0;
 
-  // WiFi 掉线重连
+  // WiFi 掉线重连（首选失败时自动 fallback 到备选）
   if (WiFi.status() != WL_CONNECTED) {
     // 快闪 = 无 WiFi
     if (millis() - lastBlink > 120) { lastBlink = millis(); ledOn = !ledOn; digitalWrite(LED_PIN, ledOn); }
-    WiFi.reconnect();
+    if (millis() - lastFall > 8000) {
+      lastFall = millis();
+      checkWifiFallback();
+    }
     delay(50);
     return;
   }
