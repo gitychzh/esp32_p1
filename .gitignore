@@ -15,3 +15,15 @@ __pycache__/
 # 临时/日志
 *.log
 tmp/
+
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# 大文件/厂商资料包
+*.zip
+gcm-diagnose.log
+
+# 厂商资料包（本地保留，不进仓库）
+SuperMini-ESP32-C3*/
